@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto bg-white rounded-lg shadow-md p-6">
+    <div class="mb-6">
+        <h2 class="text-2xl font-semibold">Chat with Video Content</h2>
+        <p class="text-gray-600">Discussing: <a href="{{ youtube_url }}" target="_blank" class="text-blue-600">{{ youtube_url }}</a></p>
+    </div>
+    
+    <div class="flex flex-col md:flex-row gap-6">
+        <!-- Chat container -->
+        <div class="flex-1">
+            <div id="chatContainer" class="bg-gray-50 rounded-lg p-4 h-96 overflow-y-auto mb-4 space-y-4">
+                <!-- Chat messages will appear here -->
+            </div>
+            
+            <form id="chatForm" class="flex gap-2">
+                <input type="text" id="messageInput" 
+                       class="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="Ask about the video content...">
+                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">
+                    Send
+                </button>
+            </form>
+            
+            <div class="mt-4">
+                <button id="audioBtn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition">
+                    Record Audio
+                </button>
+                <div id="audioControls" class="hidden mt-2">
+                    <button id="startRecording" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition">
+                        Start Recording
+                    </button>
+                    <button id="stopRecording" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition ml-2" disabled>
+                        Stop
+                    </button>
+                    <div id="audioStatus" class="text-sm text-gray-600 mt-2"></div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Wikipedia search -->
+        <div class="md:w-1/3">
+            <div class="bg-gray-50 rounded-lg p-4">
+                <h3 class="font-semibold mb-2">Enhance Knowledge Base</h3>
+                <p class="text-sm text-gray-600 mb-3">Search Wikipedia to add more information to the chatbot's knowledge:</p>
+                
+                <form id="wikipediaForm" class="flex gap-2">
+                    <input type="text" id="wikipediaInput" 
+                           class="flex-1 px-3 py-1 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                           placeholder="Search Wikipedia...">
+                    <button type="submit" class="bg-green-600 text-white px-3 py-1 rounded-lg hover:bg-green-700 transition text-sm">
+                        Search
+                    </button>
+                </form>
+                
+                <div id="wikipediaResult" class="mt-3 text-sm hidden">
+                    <p class="font-medium">Information added from Wikipedia about <span id="wikiTopic"></span></p>
+                    <a id="wikiLink" href="#" target="_blank" class="text-blue-600 text-xs">View source</a>
+                </div>
+            </div>
+            
+            <div class="mt-4 bg-gray-50 rounded-lg p-4">
+                <h3 class="font-semibold mb-2">Chat Controls</h3>
+                <button id="clearChatBtn" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition text-sm">
+                    Clear Chat History
+                </button>
+                <button id="backToVideoBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm ml-2">
+                    Back to Video
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+$(document).ready(function() {
+    const chatContainer = $('#chatContainer');
+    const chatForm = $('#chatForm');
+    const messageInput = $('#messageInput');
+    const wikipediaForm = $('#wikipediaForm');
+    const wikipediaInput = $('#wikipediaInput');
+    const wikipediaResult = $('#wikipediaResult');
+    const audioBtn = $('#audioBtn');
+    const audioControls = $('#audioControls');
+    const startRecording = $('#startRecording');
+    const stopRecording = $('#stopRecording');
+    const audioStatus = $('#audioStatus');
+    
+    // Load any existing chat history
+    function loadChatHistory() {
+        chatContainer.empty();
+        // In a real app, you would load from session or database
+    }
+    
+    loadChatHistory();
+    
+    // Handle chat form submission
+    chatForm.on('submit', function(e) {
+        e.preventDefault();
+        const message = messageInput.val().trim();
+        if (!message) return;
+        
+        // Add user message to chat
+        addMessage('user', message);
+        messageInput.val('');
+        
+        // Send to server
+        $.ajax({
+            type: 'POST',
+            url: '/chat',
+            data: {message: message},
+            success: function(response) {
+                // Add bot response to chat
+                addMessage('bot', response.response);
+                
+                // Update chat history display
+                updateChatHistory(response.chat_history);
+            },
+            error: function(xhr) {
+                addMessage('bot', 'Sorry, there was an error processing your message.');
+                console.error(xhr.responseText);
+            }
+        });
+    });
+    
+    // Handle Wikipedia form submission
+    wikipediaForm.on('submit', function(e) {
+        e.preventDefault();
+        const query = wikipediaInput.val().trim();
+        if (!query) return;
+        
+        $.ajax({
+            type: 'POST',
+            url: '/chat',
+            data: {wikipedia_query: query},
+            success: function(response) {
+                // Show success message
+                wikipediaResult.removeClass('hidden');
+                $('#wikiTopic').text(query);
+                $('#wikiLink').attr('href', response.wikipedia_link || '#');
+                wikipediaInput.val('');
+                
+                // Add system message to chat
+                addMessage('system', `Added Wikipedia information about ${query} to knowledge base.`);
+            },
+            error: function(xhr) {
+                alert('Error: ' + xhr.responseText);
+            }
+        });
+    });
+    
+    // Audio recording controls
+    audioBtn.on('click', function() {
+        audioControls.toggleClass('hidden');
+    });
+    
+    startRecording.on('click', function() {
+        audioStatus.text('Recording...');
+        startRecording.prop('disabled', true);
+        stopRecording.prop('disabled', false);
+        
+        // In a real app, you would start recording here
+        // For now, we'll simulate it
+        setTimeout(function() {
+            stopRecording.trigger('click');
+        }, 3000);
+    });
+    
+    stopRecording.on('click', function() {
+        audioStatus.text('Processing audio...');
+        startRecording.prop('disabled', false);
+        stopRecording.prop('disabled', true);
+        
+        // Simulate processing and transcription
+        setTimeout(function() {
+            // In a real app, you would send the audio to your /audio_transcribe endpoint
+            $.ajax({
+                type: 'POST',
+                url: '/audio_transcribe',
+                data: new FormData(),
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    if (response.transcription) {
+                        messageInput.val(response.transcription);
+                        audioStatus.text('Audio transcribed. Press Send or edit the text.');
+                    } else {
+                        audioStatus.text('Error: ' + (response.error || 'Unknown error'));
+                    }
+                },
+                error: function(xhr) {
+                    audioStatus.text('Error: ' + xhr.responseText);
+                }
+            });
+        }, 1500);
+    });
+    
+    // Helper functions
+    function addMessage(role, content) {
+        const roleClass = role === 'user' ? 'bg-blue-100' : 
+                         role === 'bot' ? 'bg-gray-100' : 'bg-green-100';
+        const roleLabel = role === 'user' ? 'You' : 
+                         role === 'bot' ? 'Bot' : 'System';
+        
+        chatContainer.append(`
+            <div class="flex ${role === 'user' ? 'justify-end' : 'justify-start'}">
+                <div class="${roleClass} rounded-lg p-3 max-w-xs md:max-w-md">
+                    <div class="text-xs font-semibold text-gray-500">${roleLabel}</div>
+                    <div class="mt-1">${content}</div>
+                </div>
+            </div>
+        `);
+        
+        // Scroll to bottom
+        chatContainer.scrollTop(chatContainer[0].scrollHeight);
+    }
+    
+    function updateChatHistory(history) {
+        chatContainer.empty();
+        history.forEach(msg => {
+            addMessage(msg.role === 'human' ? 'user' : 'ai', msg.content);
+        });
+    }
+    
+    // Control buttons
+    $('#clearChatBtn').on('click', function() {
+        if (confirm('Clear all chat history?')) {
+            chatContainer.empty();
+            // In a real app, you would also clear server-side history
+        }
+    });
+    
+    $('#backToVideoBtn').on('click', function() {
+        window.location.href = '/';
+    });
+});
+</script>
+{% endblock %}

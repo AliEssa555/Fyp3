@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto bg-white rounded-lg shadow-md p-6">
+    <!-- YouTube URL Input -->
+    <div id="youtubeSection" class="mb-8">
+        <form id="youtubeForm" class="mb-6">
+            <div class="flex flex-col space-y-4">
+                <label for="youtube_url" class="text-lg font-medium">YouTube Video URL:</label>
+                <input type="text" id="youtube_url" name="youtube_url" 
+                       class="px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="https://www.youtube.com/watch?v=..." required>
+                <button type="submit" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition">
+                    Analyze Transcript
+                </button>
+            </div>
+        </form>
+        
+        {% if error %}
+        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
+            {{ error }}
+        </div>
+        {% endif %}
+        
+        <div id="processingSection" class="hidden text-center py-8">
+            <img src="{{ url_for('static', filename='images/loading.gif') }}" alt="Loading" class="mx-auto h-16 w-16 mb-4">
+            <p class="text-lg">Processing the YouTube video transcript...</p>
+            <div id="progressBar" class="w-full bg-gray-200 rounded-full h-2.5 mt-4">
+                <div class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+            </div>
+            <p id="progressText" class="text-sm text-gray-600 mt-2">Initializing...</p>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div id="resultsSection" class="hidden">
+        <div class="mb-8">
+            <h2 class="text-xl font-semibold mb-4">Video Player</h2>
+            <div class="aspect-w-16 aspect-h-9">
+                <iframe id="youtubePlayer" class="w-full h-96" frameborder="0" allowfullscreen></iframe>
+            </div>
+        </div>
+        
+        <div class="mb-8">
+            <h2 class="text-xl font-semibold mb-4">Generated Questions</h2>
+            <div id="qaContainer" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <!-- Chat Interface -->
+    <div id="chatSection" class="hidden mt-8">
+        <div class="flex flex-col space-y-4">
+            <h2 class="text-xl font-semibold">Chat with Video Content</h2>
+            
+            <div id="chatContainer" class="bg-gray-50 rounded-lg p-4 h-96 overflow-y-auto mb-4 space-y-4">
+                <!-- Chat messages will appear here -->
+            </div>
+            
+            <form id="chatForm" class="flex gap-2">
+                <input type="text" id="messageInput" 
+                       class="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="Ask about the video content...">
+                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">
+                    Send
+                </button>
+            </form>
+            
+            <!-- Voice Chat Controls -->
+            <div class="mt-4">
+                <button id="toggleVoiceBtn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition">
+                    Start Voice Chat
+                </button>
+                <div id="voiceControls" class="hidden mt-2">
+                    <button id="startRecording" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition">
+                        Start Recording
+                    </button>
+                    <button id="stopRecording" class="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition ml-2" disabled>
+                        Stop
+                    </button>
+                    <div id="voiceStatus" class="text-sm text-gray-600 mt-2"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+$(document).ready(function() {
+    let checksRemaining = 150; // 5 minute timeout (150 * 2s)
+    let mediaRecorder;
+    let audioChunks = [];
+    
+    // YouTube URL submission
+    $('#youtubeForm').on('submit', function(e) {
+        e.preventDefault();
+        const url = $('#youtube_url').val();
+        
+        // Reset UI
+        $('#processingSection').removeClass('hidden');
+        $('#resultsSection').addClass('hidden');
+        $('#chatSection').addClass('hidden');
+        $('#qaContainer').empty();
+        checksRemaining = 150;
+        
+        // Submit form
+        $.ajax({
+            type: 'POST',
+            url: '/',
+            data: {youtube_url: url},
+            success: function() {
+                checkProcessingStatus();
+            },
+            error: function(xhr) {
+                $('#processingSection').addClass('hidden');
+                alert('Error: ' + xhr.responseText);
+            }
+        });
+    });
+    
+    // Check processing status
+    function checkProcessingStatus() {
+        if (checksRemaining-- <= 0) {
+            $('#progressText').text("Timed out - please try again");
+            return;
+        }
+        
+        $.get('/status')
+            .done(function(data) {
+                console.log("Status:", data);
+                
+                if (data.status === 'complete') {
+                    showResults(data);
+                } 
+                else if (data.status === 'error') {
+                    showError(data.message);
+                }
+                else {
+                    $('#progressText').text(data.progress || 'Processing...');
+                    setTimeout(checkProcessingStatus, 2000);
+                }
+            })
+            .fail(function() {
+                setTimeout(checkProcessingStatus, 2000);
+            });
+    }
+    
+    // Show results
+    function showResults(data) {
+        $('#processingSection').addClass('hidden');
+        $('#resultsSection').removeClass('hidden');
+        $('#chatSection').removeClass('hidden');
+        
+        // Set up YouTube player
+        const videoId = data.video_id;
+        $('#youtubePlayer').attr('src', `https://www.youtube.com/embed/${videoId}?autoplay=1`);
+        
+        // Display QA pairs
+        const qaContainer = $('#qaContainer');
+        qaContainer.empty();
+        
+        if (data.qa_pairs && data.qa_pairs.length > 0) {
+            data.qa_pairs.forEach(qa => {
+                const [question, answer=''] = qa.split('Answer:');
+                qaContainer.append(`
+                    <div class="bg-gray-50 p-4 rounded-lg mb-2">
+                        <p class="font-medium">${question || qa}</p>
+                        <p class="text-gray-600 mt-1">${answer}</p>
+                    </div>
+                `);
+            });
+        } else {
+            qaContainer.append('<p class="text-gray-600">No questions generated for this video.</p>');
+        }
+    }
+    
+    // Show error
+    function showError(message) {
+        $('#processingSection').addClass('hidden');
+        alert('Error: ' + (message || 'Processing failed'));
+    }
+    
+    // Chat message submission
+    $('#chatForm').on('submit', function(e) {
+        e.preventDefault();
+        const message = $('#messageInput').val().trim();
+        if (!message) return;
+        
+        $('#messageInput').val('');
+        addMessage('user', message);
+        
+        $.ajax({
+            type: 'POST',
+            url: '/',
+            data: {message: message},
+            success: function(response) {
+                addMessage('bot', response.response);
+                updateChatHistory(response.chat_history);
+            },
+            error: function(xhr) {
+                addMessage('bot', 'Error: ' + xhr.responseText);
+            }
+        });
+    });
+    
+    // Voice chat controls
+    $('#toggleVoiceBtn').on('click', function() {
+        $('#voiceControls').toggleClass('hidden');
+    });
+    
+    // Start recording
+    $('#startRecording').on('click', function() {
+        $('#voiceStatus').text('Preparing microphone...');
+        $('#startRecording').prop('disabled', true);
+        $('#stopRecording').prop('disabled', false);
+        
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(stream => {
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = e => {
+                    audioChunks.push(e.data);
+                };
+                
+                mediaRecorder.onstop = sendAudio;
+                
+                mediaRecorder.start();
+                $('#voiceStatus').text('Recording...');
+            })
+            .catch(err => {
+                $('#voiceStatus').text('Error: ' + err.message);
+                $('#startRecording').prop('disabled', false);
+            });
+    });
+    
+    // Stop recording
+    $('#stopRecording').on('click', function() {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+            $('#voiceStatus').text('Processing audio...');
+            $('.record-btn').prop('disabled', true);
+        }
+    });
+    
+    // Send audio to server
+    function sendAudio() {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording.wav');
+        
+        $.ajax({
+            url: '/',
+            type: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(response) {
+                $('#voiceStatus').text('Audio processed');
+                addMessage('user', response.transcription);
+                addMessage('bot', response.response);
+                updateChatHistory(response.chat_history);
+            },
+            error: function(xhr) {
+                $('#voiceStatus').text('Error: ' + xhr.responseText);
+            },
+            complete: function() {
+                $('#startRecording').prop('disabled', false);
+                $('#stopRecording').prop('disabled', true);
+                if (mediaRecorder && mediaRecorder.stream) {
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                }
+            }
+        });
+    }
+    
+    // Helper functions
+    function addMessage(role, content) {
+        const roleClass = role === 'user' ? 'bg-blue-100' : 'bg-gray-100';
+        const roleLabel = role === 'user' ? 'You' : 'Bot';
+        
+        $('#chatContainer').append(`
+            <div class="flex ${role === 'user' ? 'justify-end' : 'justify-start'}">
+                <div class="${roleClass} rounded-lg p-3 max-w-xs md:max-w-md">
+                    <div class="text-xs font-semibold text-gray-500">${roleLabel}</div>
+                    <div class="mt-1">${content}</div>
+                </div>
+            </div>
+        `);
+        
+        $('#chatContainer').scrollTop($('#chatContainer')[0].scrollHeight);
+    }
+    
+    function updateChatHistory(history) {
+        $('#chatContainer').empty();
+        history.forEach(msg => {
+            addMessage(msg.role === 'human' ? 'user' : 'bot', msg.content);
+        });
+    }
+});
+</script>
+{% endblock %}

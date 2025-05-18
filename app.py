@@ -2,7 +2,8 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from youtube_transcript_api import YouTubeTranscriptApi
 import pandas as pd
 from langchain.docstore.document import Document
-from langchain_community.vectorstores import FAISS
+#from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma,FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
 from langchain.chains.question_answering import load_qa_chain
@@ -18,29 +19,16 @@ from langsmith import Client
 import time
 import threading
 from langchain_huggingface import HuggingFaceEmbeddings
-from flask_session import Session
-import io
-from audio_preprocessor import preprocess_audio
-from model_loader import WhisperModel
-from transcription_service import transcribe_audio
 
-# Initialize Flask app
+
 app = Flask(__name__)
-app.secret_key = 'your-very-secret-key-here'
-app.config['SESSION_TYPE'] = 'filesystem'
-app.config['SESSION_FILE_DIR'] = './flask_session'
-Session(app)
-
-# Initialize Whisper model
-whisper_model = WhisperModel()
-processor = whisper_model.get_processor()
-model = whisper_model.get_model()
-
-# Langchain configuration
+app.secret_key = 'your_secret_key_here'
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGSMITH_API_KEY"] = "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"
-os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-os.environ["LANGCHAIN_PROJECT"] = "default"
+#os.environ["LANGCHAIN_API_KEY"] = userdata.get("lsmith")
+
+os.environ["LANGCHAIN_ENDPOINT"]= "https://api.smith.langchain.com"
+os.environ["LANGCHAIN_PROJECT"]="default"
 
 # Initialize Groq
 os.environ["GROQ_API_KEY"] = "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"
@@ -50,9 +38,6 @@ llm = ChatGroq(model="llama3-8b-8192", temperature=0.7, verbose=True, timeout=No
 client = Client()
 dataset_name = "FYP3 Draft Dataset"
 
-# Helper functions (get_video_id, get_transcript, prepare_documents, create_vector_store, 
-# generate_qa_pairs, process_qa_pairs, save_to_langsmith, create_chat_chain, 
-# get_wikipedia_data, update_vector_store remain the same as in your original code)
 def get_video_id(url):
     """Extract video ID from YouTube URL"""
     if 'youtu.be' in url:
@@ -60,6 +45,7 @@ def get_video_id(url):
     elif 'youtube.com' in url:
         return url.split('v=')[1].split('&')[0]
     return None
+
 def get_transcript(youtube_url, chunk_duration=10):
     try:
         # Extract Video ID from URL
@@ -99,6 +85,7 @@ def get_transcript(youtube_url, chunk_duration=10):
     except Exception as e:
         print(f"Error getting transcript: {e}")
         return None
+
 def prepare_documents(df):
     texts = df['text']
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=20)
@@ -148,7 +135,34 @@ def process_qa_pairs(qa_pairs):
     
     return inputs, outputs
 
-from flask import copy_current_request_context
+def save_to_langsmith(inputs, outputs):
+    datasets = {d.name: d for d in client.list_datasets()}
+    
+    if dataset_name not in datasets:
+        client.create_dataset(dataset_name)
+    
+    dataset_id = str(datasets[dataset_name].id)
+    
+    for input_data, output_data in zip(inputs, outputs):
+        client.create_example(
+            dataset_id=dataset_id,
+            inputs={"question": input_data["question"]},
+            outputs={"answer": output_data["answer"]}
+        )
+
+def create_chat_chain(vectorStore):
+    print("start")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Answer the user's questions based on the context: {context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}")
+    ])
+    
+    document_chain = create_stuff_documents_chain(llm=llm, prompt=prompt)
+    retriever = vectorStore.as_retriever()
+    print("end")
+    return create_retrieval_chain(retriever, document_chain)
+
 def get_wikipedia_data(query):
     try:
         data = WikipediaLoader(query=query, load_max_docs=2).load()
@@ -168,197 +182,134 @@ def update_vector_store(vectorStore, link):
     except Exception as e:
         print(f"Error updating vector store: {e}")
         return vectorStore
-def create_chat_chain(vectorStore):
-    print("start")
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Answer the user's questions based on the context: {context}"),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("user", "{input}")
-    ])
-    
-    document_chain = create_stuff_documents_chain(llm=llm, prompt=prompt)
-    retriever = vectorStore.as_retriever()
-    print("end")
-    return create_retrieval_chain(retriever, document_chain)
-def save_to_langsmith(inputs, outputs):
-    datasets = {d.name: d for d in client.list_datasets()}
-    
-    if dataset_name not in datasets:
-        client.create_dataset(dataset_name)
-    
-    dataset_id = str(datasets[dataset_name].id)
-    
-    for input_data, output_data in zip(inputs, outputs):
-        client.create_example(
-            dataset_id=dataset_id,
-            inputs={"question": input_data["question"]},
-            outputs={"answer": output_data["answer"]}
-        )
 
-
-def process_video(url):
-    try:
-        # Get fresh app context
-        with app.app_context():
-            df = get_transcript(url)
-            if df is None:
-                session['error'] = "Failed to get transcript"
-                session.modified = True
-                return
-            
-            docs = prepare_documents(df)
-            vectorStore = create_vector_store(docs)
-            qa_pairs = generate_qa_pairs(docs)
-            inputs, outputs = process_qa_pairs(qa_pairs)
-            save_to_langsmith(inputs, outputs)
-            chain = create_chat_chain(vectorStore)
-
-            # Update session
-            session.update({
-                'vectorStore': vectorStore,
-                'chain': chain,
-                'processed': True,
-                'qa_pairs': qa_pairs,
-                'video_id': get_video_id(url)
-            })
-            session.modified = True
-            print("✅ Processing complete")
-            
-    except Exception as e:
-        print(f"Error processing video: {e}")
-        with app.app_context():
-            session['error'] = str(e)
-            session.modified = True
+from flask import copy_current_request_context
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        # Check if it's a YouTube URL submission or chat message
-        if 'youtube_url' in request.form:
-            return handle_youtube_submission(request)
-        elif 'message' in request.form:
-            return handle_chat_message(request)
-        elif 'audio' in request.files:
-            return handle_audio_message(request)
-    
-    return render_template('index.html')
+        youtube_url = request.form.get('youtube_url')
+        video_id = get_video_id(youtube_url)
+        
+        if not video_id:
+            return render_template('index.html', error="Invalid YouTube URL")
 
-def handle_youtube_submission(request):
-    youtube_url = request.form.get('youtube_url')
-    video_id = get_video_id(youtube_url)
-    
-    if not video_id:
-        return render_template('index.html', error="Invalid YouTube URL")
-
-    session.clear()
-    session['video_id'] = video_id
-    session['youtube_url'] = youtube_url
-    session['chat_history'] = []
-    session.modified = True
-
-    @copy_current_request_context
-    def run_process_video():
-        process_video(youtube_url)
-
-    try:
-        thread = threading.Thread(target=run_process_video)
-        thread.start()
-    except Exception as e:
-        session['error'] = f"Failed to start processing: {str(e)}"
+        session.clear()
+        session['video_id'] = video_id
+        session['youtube_url'] = youtube_url
         session.modified = True
 
-    return jsonify({'status': 'processing'})
+        @copy_current_request_context
+        def run_process_video():
+            process_video(youtube_url)
 
-def handle_chat_message(request):
-    if 'chain' not in session:
-        return jsonify({'error': 'Please submit a YouTube URL first'}), 400
-    
-    user_input = request.form.get('message')
-    wikipedia_query = request.form.get('wikipedia_query')
-    
-    chat_history = session.get('chat_history', [])
-    chain = session['chain']
-    vectorStore = session['vectorStore']
-    
-    if wikipedia_query:
-        link = get_wikipedia_data(wikipedia_query)
-        if link:
-            vectorStore = update_vector_store(vectorStore, link)
-            session['vectorStore'] = vectorStore
-            session['chain'] = create_chat_chain(vectorStore)
-            chain = session['chain']
-            chat_history.append(HumanMessage(content=f"Wikipedia search: {wikipedia_query}"))
-            chat_history.append(AIMessage(content=f"I've updated my knowledge with information from Wikipedia about {wikipedia_query}"))
-    
-    response = chain.invoke({
-        "chat_history": chat_history,
-        "input": user_input,
-    })
-    
-    chat_history.append(HumanMessage(content=user_input))
-    chat_history.append(AIMessage(content=response["answer"]))
-    session['chat_history'] = chat_history
-    session.modified = True
-    
-    return jsonify({
-        'response': response["answer"],
-        'chat_history': [{'role': 'human' if isinstance(msg, HumanMessage) else 'ai', 'content': msg.content} 
-                        for msg in chat_history]
-    })
+        # ✅ Start thread with wrapped function
+        try:
+            thread = threading.Thread(target=run_process_video)
+            thread.start()
+        except Exception as e:
+            session['error'] = f"Failed to start processing: {str(e)}"
+            session.modified = True
 
-def handle_audio_message(request):
+        return render_template('index.html', processing=True, youtube_url=youtube_url)
+
+    return render_template('index.html')
+    
+
+
+from flask import copy_current_request_context
+
+def process_video(url):
+    try:
+        df = get_transcript(url)
+        if df is None:
+            session['error'] = "Failed to get transcript"
+            session.modified = True
+            return
+        
+        docs = prepare_documents(df)
+        vectorStore = create_vector_store(docs)
+        qa_pairs = generate_qa_pairs(docs)
+        inputs, outputs = process_qa_pairs(qa_pairs)
+        save_to_langsmith(inputs, outputs)
+        chain = create_chat_chain(vectorStore)
+
+        session['vectorStore'] = vectorStore
+        session['chain'] = chain
+        session['processed'] = True
+        session['qa_pairs'] = qa_pairs
+        session.modified = True
+        print("route end")
+    except Exception as e:
+        print(f"Error processing video: {e}")
+        session['error'] = str(e)
+        session.modified = True
+
+
+@app.route('/status')
+def status():
+    if 'processed' in session:
+        return jsonify({'status': 'complete', 'qa_pairs': session.get('qa_pairs', [])})
+    elif 'error' in session:
+        return jsonify({'status': 'error', 'message': session['error']})
+    else:
+        return jsonify({'status': 'processing'})
+
+@app.route('/chat', methods=['GET', 'POST'])
+def chat():
     if 'chain' not in session:
-        return jsonify({'error': 'Please submit a YouTube URL first'}), 400
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        user_input = request.form.get('message')
+        wikipedia_query = request.form.get('wikipedia_query')
+        
+        chat_history = session.get('chat_history', [])
+        chain = session['chain']
+        vectorStore = session['vectorStore']
+        
+        if wikipedia_query:
+            link = get_wikipedia_data(wikipedia_query)
+            if link:
+                vectorStore = update_vector_store(vectorStore, link)
+                session['vectorStore'] = vectorStore
+                session['chain'] = create_chat_chain(vectorStore)
+                chain = session['chain']
+                chat_history.append(HumanMessage(content=f"Wikipedia search: {wikipedia_query}"))
+                chat_history.append(AIMessage(content=f"I've updated my knowledge with information from Wikipedia about {wikipedia_query}"))
+        
+        response = chain.invoke({
+            "chat_history": chat_history,
+            "input": user_input,
+        })
+        
+        chat_history.append(HumanMessage(content=user_input))
+        chat_history.append(AIMessage(content=response["answer"]))
+        session['chat_history'] = chat_history
+        
+        return jsonify({
+            'response': response["answer"],
+            'chat_history': [{'role': 'human' if isinstance(msg, HumanMessage) else 'ai', 'content': msg.content} for msg in chat_history]
+        })
+    
+    return render_template('chat.html', youtube_url=session.get('youtube_url'))
+
+# Audio transcription routes
+@app.route('/audio_transcribe', methods=['POST'])
+def audio_transcribe():
+    if 'audio' not in request.files:
+        return jsonify({"error": "No audio file uploaded."}), 400
     
     audio_file = request.files['audio']
     
     try:
-        # Transcribe audio
-        audio_bytes = audio_file.read()
-        audio_data = preprocess_audio(io.BytesIO(audio_bytes))
-        user_input = transcribe_audio(audio_data, processor, model)
-        
-        # Process as regular chat message
-        response = handle_chat_message(request)
-        response_data = response.get_json()
-        
-        # Return both transcription and response
-        return jsonify({
-            'transcription': user_input,
-            'response': response_data['response'],
-            'chat_history': response_data['chat_history']
-        })
-        
+        # Here you would integrate your FinetuneWhisper code
+        # For now, we'll just simulate a response
+        transcription = "This is a simulated transcription of the audio."
+        return jsonify({"transcription": transcription})
     except Exception as e:
         print(f"Error transcribing audio: {e}")
         return jsonify({"error": "An error occurred while processing the audio."}), 500
-
-@app.route('/status')
-def status():
-    try:
-        if 'processed' in session:
-            return jsonify({
-                'status': 'complete',
-                'qa_pairs': session.get('qa_pairs', []),
-                'video_id': session.get('video_id', '')
-            })
-        elif 'error' in session:
-            return jsonify({
-                'status': 'error',
-                'message': session['error']
-            })
-        else:
-            return jsonify({
-                'status': 'processing',
-                'progress': 'Processing video...'
-            })
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        })
-
-# The process_video function remains the same as in your original code
 
 if __name__ == '__main__':
     app.run(debug=True)

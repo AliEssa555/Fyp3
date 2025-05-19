@@ -38,31 +38,24 @@ def home():
 @app.route('/generate', methods=['POST'])
 def generate():
     youtube_url = request.form.get('youtube_url')
-    
+    print(youtube_url)
     if not youtube_url:
         return jsonify({'error': 'YouTube URL is required'}), 400
     
     try:
-        logger.info(f"Generating podcast for URL: {youtube_url}")
+        audio_file = generate_podcast(urls=[youtube_url] ,llm_model_name="groq/gemma2-9b-it",api_key_label="GROQ_API_KEY",tts_model="elevenlabs",longform=True)
         
-        # Generate podcast with error handling
-        audio_file_path = generate_podcast(
-            transcript_file="youtube_transcript_grouped.csv",
-            llm_model_name="groq/llama3-8b-8192",
-            tts_model="elevenlabs"
-        )
-        
-        if not audio_file_path:
+        if not audio_file:
             raise ValueError("No audio file path returned from generate_podcast")
             
-        logger.info(f"Generated audio file at: {audio_file_path}")
+        logger.info(f"Generated audio file at: {audio_file}")
 
         # Handle file movement
-        audio_file_name = os.path.basename(audio_file_path)
+        audio_file_name = os.path.basename(audio_file)
         static_audio_path = os.path.join(AUDIO_DIR, audio_file_name)
         
         # Use copy instead of rename to preserve original
-        with open(audio_file_path, 'rb') as src, open(static_audio_path, 'wb') as dst:
+        with open(audio_file, 'rb') as src, open(static_audio_path, 'wb') as dst:
             dst.write(src.read())
         
         # Return response with audio player
